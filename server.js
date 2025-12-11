@@ -9,12 +9,19 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// 🔥 ENV variables
+// ENV variables
 const STORE = process.env.SHOP_DOMAIN;
 const TOKEN = process.env.SHOP_ACCESS_TOKEN;
 const API_VERSION = process.env.API_VERSION;
 
-// 👉 Main API endpoint
+// Helper: Parse Shopify pagination link
+function getNextLink(linkHeader) {
+  if (!linkHeader) return null;
+  const match = linkHeader.match(/<([^>]+)>; rel="next"/);
+  return match ? match[1] : null;
+}
+
+// MAIN API
 app.get("/giftcard", async (req, res) => {
   const email = req.query.email;
 
@@ -22,27 +29,45 @@ app.get("/giftcard", async (req, res) => {
     return res.status(400).json({ error: "Email missing" });
   }
 
-  const url = `https://${STORE}/admin/api/${API_VERSION}/gift_cards.json?query=email:${email}`;
-
   try {
-    const response = await fetch(url, {
-      method: "GET",
-      headers: {
-        "X-Shopify-Access-Token": TOKEN,
-        "Content-Type": "application/json"
+    let allGiftCards = [];
+    let url = `https://${STORE}/admin/api/${API_VERSION}/gift_cards.json?query=email:${email}&limit=50`;
+
+    // --- PAGINATION LOOP ---
+    while (url) {
+      const response = await fetch(url, {
+        method: "GET",
+        headers: {
+          "X-Shopify-Access-Token": TOKEN,
+          "Content-Type": "application/json"
+        }
+      });
+
+      const data = await response.json();
+
+      if (data?.gift_cards?.length) {
+        allGiftCards.push(...data.gift_cards);
       }
-    });
 
-    const data = await response.json();
+      // Check pagination
+      url = getNextLink(response.headers.get("link"));
+    }
 
-    const totalBalance = data.gift_cards
-      ? data.gift_cards.reduce((sum, gc) => sum + parseFloat(gc.balance), 0)
-      : 0;
+    // Find correct customer_id
+    const matchedCard = allGiftCards.find(gc => gc.customer_id !== null);
+    const customerId = matchedCard ? matchedCard.customer_id : null;
+
+    // SUM balance (only > 0 cards)
+    const totalBalance = allGiftCards.reduce((sum, gc) => {
+      const bal = parseFloat(gc.balance);
+      return bal > 0 ? sum + bal : sum;
+    }, 0);
 
     res.json({
       email,
+      customer_id: customerId,
       total_balance: totalBalance,
-      gift_cards: data.gift_cards || []
+      gift_cards: allGiftCards
     });
 
   } catch (err) {
@@ -50,10 +75,12 @@ app.get("/giftcard", async (req, res) => {
   }
 });
 
+// HOME ROUTE
 app.get("/", (req, res) => {
   res.send("Gift Card API Running ✔");
 });
 
+// START SERVER
 app.listen(process.env.PORT || 3000, () => {
   console.log("Server running on port " + (process.env.PORT || 3000));
 });
