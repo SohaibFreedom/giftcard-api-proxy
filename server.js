@@ -13,16 +13,19 @@ const STORE = process.env.SHOP_DOMAIN;
 const TOKEN = process.env.SHOP_ACCESS_TOKEN;
 const API_VERSION = process.env.API_VERSION;
 
+// Helper: Parse Shopify pagination link
 function getNextLink(linkHeader) {
   if (!linkHeader) return null;
   const match = linkHeader.match(/<([^>]+)>; rel="next"/);
   return match ? match[1] : null;
 }
 
+// Helper: normalize email
 function normalizeEmail(email) {
   return String(email || "").trim().toLowerCase();
 }
 
+// Helper: Shopify GET wrapper
 async function shopifyGet(url) {
   const response = await fetch(url, {
     method: "GET",
@@ -56,7 +59,7 @@ async function getCustomerIdByEmail(email) {
 /**
  * GET /giftcard?email=...
  * Returns: { email, customer_id, total_balance }
- * Server filters by customer_id so client stays fast.
+ * ✅ Total includes ALL non-expired gift cards for that customer (server-side filtered)
  */
 app.get("/giftcard", async (req, res) => {
   const email = normalizeEmail(req.query.email);
@@ -75,20 +78,19 @@ app.get("/giftcard", async (req, res) => {
     }
 
     let totalBalance = 0;
-    let url = `https://${STORE}/admin/api/${API_VERSION}/gift_cards.json?limit=50`;
 
-    // Fetch pages, but ONLY add balance for that customer_id
+    // ✅ Shopify-side filter by customer_id (fast)
+    let url = `https://${STORE}/admin/api/${API_VERSION}/gift_cards.json?query=customer_id:${customerId}&limit=50`;
+
+    // Pagination loop
     while (url) {
       const { data, headers } = await shopifyGet(url);
       const cards = data?.gift_cards || [];
 
       for (const gc of cards) {
-        if (Number(gc.customer_id) !== Number(customerId)) continue;
-
-        // optional: only active / usable cards
         const bal = parseFloat(gc.balance || "0");
-        if (!(bal > 0)) continue;
-        if (gc.disabled_at) continue;
+
+        // ✅ Only skip expired cards (include zero balance + include disabled as well)
         if (gc.expires_on && new Date(gc.expires_on) < new Date()) continue;
 
         totalBalance += bal;
@@ -107,8 +109,12 @@ app.get("/giftcard", async (req, res) => {
   }
 });
 
-app.get("/", (req, res) => res.send("Gift Card API Running ✔"));
+// HOME ROUTE
+app.get("/", (req, res) => {
+  res.send("Gift Card API Running ✔");
+});
 
+// START SERVER
 app.listen(process.env.PORT || 3000, () => {
   console.log("Server running on port " + (process.env.PORT || 3000));
 });
