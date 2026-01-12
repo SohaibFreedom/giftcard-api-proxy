@@ -26,6 +26,13 @@ function normalizeEmail(email) {
   return String(email || "").trim().toLowerCase();
 }
 
+// HOME ROUTE
+app.get("/", (req, res) => {
+  res.send("Gift Card API Running ✔");
+});
+
+// MAIN API
+// Usage: /giftcard?email=atellechea@crimson.ua.edu
 app.get("/giftcard", async (req, res) => {
   const email = normalizeEmail(req.query.email);
 
@@ -39,6 +46,7 @@ app.get("/giftcard", async (req, res) => {
       email
     )}&limit=50`;
 
+    // --- PAGINATION LOOP ---
     while (url) {
       const response = await fetch(url, {
         method: "GET",
@@ -63,6 +71,7 @@ app.get("/giftcard", async (req, res) => {
         allGiftCards.push(...data.gift_cards);
       }
 
+      // Check pagination
       url = getNextLink(response.headers.get("link"));
     }
 
@@ -94,19 +103,18 @@ app.get("/giftcard", async (req, res) => {
 
     const customerId = matchedCard ? matchedCard.customer_id : null;
 
+    // SUM balance
     const totalBalance = filteredGiftCards.reduce((sum, gc) => {
       return sum + parseFloat(gc.balance || "0");
     }, 0);
 
-    // (Optional) return only fields you actually need
+    // ✅ return ONLY this customer's email data (minimal response)
     const slimCards = filteredGiftCards.map((gc) => ({
       id: gc.id,
-      code: gc.code, // note: depending on Shopify settings, code may be masked / restricted
       balance: gc.balance,
       initial_value: gc.initial_value,
       currency: gc.currency,
       customer_id: gc.customer_id,
-      disabled_at: gc.disabled_at,
       expires_on: gc.expires_on,
       created_at: gc.created_at,
       updated_at: gc.updated_at,
@@ -116,19 +124,15 @@ app.get("/giftcard", async (req, res) => {
       email,
       customer_id: customerId,
       total_balance: totalBalance,
-      gift_cards: slimCards,
-      count: slimCards.length,
+      active_cards_count: slimCards.length,
+      active_cards: slimCards,
     });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
 });
 
-// HOME ROUTE
-app.get("/", (req, res) => {
-  res.send("Gift Card API Running ✔");
-});
-
+// START SERVER
 app.listen(process.env.PORT || 3000, () => {
   console.log("Server running on port " + (process.env.PORT || 3000));
 });
