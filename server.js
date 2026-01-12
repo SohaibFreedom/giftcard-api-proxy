@@ -21,9 +21,13 @@ function getNextLink(linkHeader) {
   return match ? match[1] : null;
 }
 
-// MAIN API
+// Helper: normalize email
+function normalizeEmail(email) {
+  return String(email || "").trim().toLowerCase();
+}
+
 app.get("/giftcard", async (req, res) => {
-  const email = req.query.email;
+  const email = normalizeEmail(req.query.email);
 
   if (!email) {
     return res.status(400).json({ error: "Email missing" });
@@ -31,17 +35,27 @@ app.get("/giftcard", async (req, res) => {
 
   try {
     let allGiftCards = [];
-    let url = `https://${STORE}/admin/api/${API_VERSION}/gift_cards.json?query=email:${email}&limit=50`;
+    let url = `https://${STORE}/admin/api/${API_VERSION}/gift_cards.json?query=email:${encodeURIComponent(
+      email
+    )}&limit=50`;
 
-    // --- PAGINATION LOOP ---
     while (url) {
       const response = await fetch(url, {
         method: "GET",
         headers: {
           "X-Shopify-Access-Token": TOKEN,
-          "Content-Type": "application/json"
-        }
+          "Content-Type": "application/json",
+        },
       });
+
+      if (!response.ok) {
+        const text = await response.text();
+        return res.status(response.status).json({
+          error: "Shopify request failed",
+          status: response.status,
+          details: text,
+        });
+      }
 
       const data = await response.json();
 
@@ -49,29 +63,64 @@ app.get("/giftcard", async (req, res) => {
         allGiftCards.push(...data.gift_cards);
       }
 
-      // Check pagination
       url = getNextLink(response.headers.get("link"));
     }
 
-    // Find correct customer_id
-    const matchedCard = allGiftCards.find(gc => gc.customer_id !== null);
+    // ✅ AUTO-FILTER HERE (no extra params needed)
+    // Example rules:
+    // - must have balance > 0
+    // - not disabled
+    // - not expired (if expires_on exists)
+    const now = new Date();
+
+    const filteredGiftCards = allGiftCards.filter((gc) => {
+      const bal = parseFloat(gc.balance || "0");
+      if (!(bal > 0)) return false;
+
+      if (gc.disabled_at) return false;
+
+      if (gc.expires_on) {
+        const exp = new Date(gc.expires_on);
+        if (exp < now) return false;
+      }
+
+      return true;
+    });
+
+    // Find customer_id (from filtered first, fallback to all)
+    const matchedCard =
+      filteredGiftCards.find((gc) => gc.customer_id !== null) ||
+      allGiftCards.find((gc) => gc.customer_id !== null);
+
     const customerId = matchedCard ? matchedCard.customer_id : null;
 
-    // SUM balance (only > 0 cards)
-    const totalBalance = allGiftCards.reduce((sum, gc) => {
-      const bal = parseFloat(gc.balance);
-      return bal > 0 ? sum + bal : sum;
+    const totalBalance = filteredGiftCards.reduce((sum, gc) => {
+      return sum + parseFloat(gc.balance || "0");
     }, 0);
 
-    res.json({
+    // (Optional) return only fields you actually need
+    const slimCards = filteredGiftCards.map((gc) => ({
+      id: gc.id,
+      code: gc.code, // note: depending on Shopify settings, code may be masked / restricted
+      balance: gc.balance,
+      initial_value: gc.initial_value,
+      currency: gc.currency,
+      customer_id: gc.customer_id,
+      disabled_at: gc.disabled_at,
+      expires_on: gc.expires_on,
+      created_at: gc.created_at,
+      updated_at: gc.updated_at,
+    }));
+
+    return res.json({
       email,
       customer_id: customerId,
       total_balance: totalBalance,
-      gift_cards: allGiftCards
+      gift_cards: slimCards,
+      count: slimCards.length,
     });
-
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    return res.status(500).json({ error: err.message });
   }
 });
 
@@ -80,7 +129,6 @@ app.get("/", (req, res) => {
   res.send("Gift Card API Running ✔");
 });
 
-// START SERVER
 app.listen(process.env.PORT || 3000, () => {
   console.log("Server running on port " + (process.env.PORT || 3000));
 });
